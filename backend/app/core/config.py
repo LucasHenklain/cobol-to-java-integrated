@@ -3,7 +3,7 @@ Application configuration
 """
 
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 import os
 
 
@@ -25,6 +25,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",  # Vite dev server
         "http://127.0.0.1:5173"   # Vite dev server alternative
     ]
+    CORS_ALLOW_ORIGIN_REGEX: Optional[str] = r"https?://(localhost|127\.0\.0\.1):\d+"
     
     # Database
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/cobol_migration"

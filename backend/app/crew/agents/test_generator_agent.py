@@ -14,6 +14,7 @@ class TestGeneratorAgent:
     Agent responsible for generating JUnit tests
     for the translated Java code
     """
+    __test__ = False  # Prevent pytest from collecting this agent as a test class
     
     def __init__(self):
         self.name = "TestGeneratorAgent"
@@ -53,6 +54,7 @@ class TestGeneratorAgent:
                     f.write(test_code)
                 
                 test_files[program_name] = {
+                    "program_id": java_info.get("program_id"),
                     "path": test_file_path,
                     "class_name": f"{program_name}Test"
                 }

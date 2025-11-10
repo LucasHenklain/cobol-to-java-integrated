@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from pathlib import Path
 import logging
 from datetime import datetime
 
@@ -29,6 +30,14 @@ async def lifespan(app: FastAPI):
     logger.info("Starting COBOL to Java Migration System...")
     await init_db()
     logger.info("Database initialized")
+
+    # Ensure workspace directories exist
+    for directory in [
+        settings.TEMP_DIR,
+        settings.REPOS_DIR,
+        settings.ARTIFACTS_DIR
+    ]:
+        Path(directory).mkdir(parents=True, exist_ok=True)
     
     yield
     
@@ -46,6 +55,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+logger.info(
+    "Configuring CORS with origins=%s regex=%s",
+    settings.CORS_ORIGINS,
+    settings.CORS_ALLOW_ORIGIN_REGEX,
+)
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +68,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=settings.CORS_ALLOW_ORIGIN_REGEX,
 )
 
 
@@ -102,11 +118,12 @@ app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
-        "main:app",
+        app,
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,
         log_level="info"
     )
+

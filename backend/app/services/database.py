@@ -2,7 +2,15 @@
 Database service for managing connections and sessions
 """
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
+
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import logging
@@ -13,8 +21,8 @@ from app.models.job import Base
 logger = logging.getLogger(__name__)
 
 # Async engine for FastAPI
-async_engine = None
-async_session_maker = None
+async_engine: Optional[AsyncEngine] = None
+async_session_maker: Optional[async_sessionmaker[AsyncSession]] = None
 
 # Sync engine for migrations
 sync_engine = None
@@ -29,8 +37,10 @@ async def init_db():
         database_url = settings.DATABASE_URL
         
         # Handle different database types
-        if database_url.startswith("postgresql://"):
-            database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
+        if database_url.startswith(("postgresql://", "postgresql+asyncpg://")):
+            # Se já tiver +asyncpg, não precisa substituir
+            if not database_url.startswith("postgresql+asyncpg://"):
+                database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
             async_engine = create_async_engine(
                 database_url,
                 echo=settings.DEBUG,
@@ -76,17 +86,30 @@ async def close_db():
         logger.info("Database connections closed")
 
 
-async def get_session() -> AsyncSession:
-    """Get database session"""
-    async with async_session_maker() as session:
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the configured async session factory"""
+    if async_session_maker is None:
+        raise RuntimeError("Database session maker is not initialized. Call init_db() first.")
+    return async_session_maker
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncGenerator[AsyncSession, None]:
+    """Async context manager that yields a managed session"""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
         try:
             yield session
             await session.commit()
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
+
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency that provides a managed session"""
+    async with session_scope() as session:
+        yield session
 
 
 def get_sync_engine():

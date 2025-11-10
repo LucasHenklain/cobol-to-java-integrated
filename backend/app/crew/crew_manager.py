@@ -14,6 +14,8 @@ from app.crew.agents.parser_agent import COBOLParserAgent
 from app.crew.agents.translator_agent import TranslatorAgent
 from app.crew.agents.test_generator_agent import TestGeneratorAgent
 from app.crew.agents.validator_agent import ValidatorAgent
+from app.crew.agents.db_vetorial_agent import DBVetorialAgent
+from app.crew.agents.ai_translator_agent import AITranslatorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,8 @@ class CrewManager:
         self.translator_agent = TranslatorAgent()
         self.test_generator_agent = TestGeneratorAgent()
         self.validator_agent = ValidatorAgent()
+        self.db_vetorial_agent = DBVetorialAgent()
+        self.ai_translator_agent = AITranslatorAgent()
     
     async def load_job(self):
         """Load job from database"""
@@ -149,6 +153,21 @@ class CrewManager:
             if not translator_result.get("success"):
                 raise Exception(f"TranslatorAgent failed: {translator_result.get('error')}")
             
+            ##
+
+            await self.db_vetorial_agent.run({
+                "job_id": self.job_id,
+                "programs": programs,
+                "java_files": translator_result.get("java_files")
+            })
+
+
+            await self.ai_translator_agent.run({
+                "job_id": self.job_id,
+                "programs": programs,
+                "java_files": translator_result.get("java_files")
+            })
+
             # Step 4: Generate tests
             logger.info(f"[{self.job_id}] Running TestGeneratorAgent...")
             await self.update_job_status(JobStatus.RUNNING, progress=70,

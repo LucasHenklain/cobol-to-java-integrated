@@ -2,12 +2,13 @@
 Inventory Agent - Scans repositories and lists COBOL programs
 """
 
-import os
+import asyncio
 import logging
+import os
 from pathlib import Path
-import tempfile
-import shutil
 from typing import Dict, List, Any
+
+from app.services.repository import clone_or_update_repository
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,13 @@ class InventoryAgent:
             selected_programs = task_input.get("selected_programs")
             
             logger.info(f"[{job_id}] Starting repository scan: {repo_url}")
-            
-            # For MVP, we'll simulate repository cloning
-            # In production, use GitPython to clone the repository
-            repo_path = self._simulate_repo_clone(repo_url, branch, job_id)
+
+            repo_path, commit_hash, resolved_branch = await asyncio.to_thread(
+                clone_or_update_repository,
+                job_id,
+                repo_url,
+                branch
+            )
             
             # Scan for COBOL files
             programs = self._scan_cobol_files(repo_path, selected_programs)
@@ -66,6 +70,8 @@ class InventoryAgent:
                 "success": True,
                 "job_id": job_id,
                 "repo_path": repo_path,
+                "commit_hash": commit_hash,
+                "branch": resolved_branch,
                 "programs": programs,
                 "copybooks": copybooks,
                 "jcl_files": jcl_files,
@@ -83,89 +89,6 @@ class InventoryAgent:
                 "error": str(e)
             }
     
-    def _simulate_repo_clone(self, repo_url: str, branch: str, job_id: str) -> str:
-        """
-        Simulate repository cloning for MVP
-        In production, use GitPython to actually clone the repository
-        """
-        # Create temporary directory for this job
-        temp_dir = tempfile.mkdtemp(prefix=f"cobol_migration_{job_id}_")
-        
-        # For MVP, create sample COBOL files
-        self._create_sample_cobol_files(temp_dir)
-        
-        logger.info(f"Simulated repo clone to: {temp_dir}")
-        return temp_dir
-    
-    def _create_sample_cobol_files(self, base_path: str):
-        """Create sample COBOL files for demonstration"""
-        
-        # Create directory structure
-        src_dir = Path(base_path) / "src" / "cobol"
-        src_dir.mkdir(parents=True, exist_ok=True)
-        
-        copybook_dir = Path(base_path) / "copybooks"
-        copybook_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Sample COBOL program 1
-        sample_program_1 = """       IDENTIFICATION DIVISION.
-       PROGRAM-ID. HELLO-WORLD.
-       AUTHOR. MIGRATION-SYSTEM.
-       
-       ENVIRONMENT DIVISION.
-       
-       DATA DIVISION.
-       WORKING-STORAGE SECTION.
-       01  WS-MESSAGE        PIC X(30) VALUE 'Hello from COBOL!'.
-       01  WS-COUNTER        PIC 9(4) VALUE ZERO.
-       
-       PROCEDURE DIVISION.
-       MAIN-LOGIC.
-           DISPLAY WS-MESSAGE.
-           PERFORM PROCESS-LOOP 10 TIMES.
-           STOP RUN.
-       
-       PROCESS-LOOP.
-           ADD 1 TO WS-COUNTER.
-           DISPLAY 'Counter: ' WS-COUNTER.
-"""
-        
-        with open(src_dir / "HELLO.cbl", "w") as f:
-            f.write(sample_program_1)
-        
-        # Sample COBOL program 2
-        sample_program_2 = """       IDENTIFICATION DIVISION.
-       PROGRAM-ID. CALCULATOR.
-       
-       DATA DIVISION.
-       WORKING-STORAGE SECTION.
-       01  WS-NUM1           PIC 9(5) VALUE 100.
-       01  WS-NUM2           PIC 9(5) VALUE 200.
-       01  WS-RESULT         PIC 9(6) VALUE ZERO.
-       
-       PROCEDURE DIVISION.
-       MAIN-PARA.
-           COMPUTE WS-RESULT = WS-NUM1 + WS-NUM2.
-           DISPLAY 'Result: ' WS-RESULT.
-           STOP RUN.
-"""
-        
-        with open(src_dir / "CALC.cbl", "w") as f:
-            f.write(sample_program_2)
-        
-        # Sample copybook
-        sample_copybook = """       01  CUSTOMER-RECORD.
-           05  CUST-ID           PIC 9(10).
-           05  CUST-NAME         PIC X(50).
-           05  CUST-ADDRESS      PIC X(100).
-           05  CUST-PHONE        PIC X(15).
-"""
-        
-        with open(copybook_dir / "CUSTOMER.cpy", "w") as f:
-            f.write(sample_copybook)
-        
-        logger.info(f"Created sample COBOL files in {base_path}")
-    
     def _scan_cobol_files(self, repo_path: str, selected_programs: List[str] = None) -> List[Dict]:
         """Scan for COBOL program files"""
         programs = []
@@ -175,17 +98,23 @@ class InventoryAgent:
                 if any(file.lower().endswith(ext) for ext in self.cobol_extensions):
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, repo_path)
-                    
-                    # If specific programs selected, filter
-                    if selected_programs and rel_path not in selected_programs:
-                        continue
-                    
+
+                    if selected_programs:
+                        normalized = {p.lower() for p in selected_programs}
+                        if (
+                            rel_path.lower() not in normalized
+                            and Path(rel_path).name.lower() not in normalized
+                        ):
+                            continue
+
                     programs.append({
                         "path": file_path,
                         "relative_path": rel_path,
                         "name": Path(file).stem,
                         "extension": Path(file).suffix,
-                        "size_bytes": os.path.getsize(file_path)
+                        "size_bytes": os.path.getsize(file_path),
+                        "lines_of_code": self._count_lines_of_code(file_path),
+                        "copybooks": self._extract_copybooks(file_path)
                     })
         
         return programs
@@ -227,3 +156,28 @@ class InventoryAgent:
                     })
         
         return jcl_files
+
+    def _count_lines_of_code(self, file_path: str) -> int:
+        """Count non-empty lines of code in a file."""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                return sum(1 for line in f if line.strip())
+        except OSError:
+            return 0
+
+    def _extract_copybooks(self, file_path: str) -> List[str]:
+        """Extract COPY statements to identify copybook dependencies."""
+        copybooks = []
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line_upper = line.upper()
+                    if " COPY " in line_upper:
+                        parts = line_upper.strip().replace(".", "").split()
+                        if "COPY" in parts:
+                            idx = parts.index("COPY")
+                            if idx + 1 < len(parts):
+                                copybooks.append(parts[idx + 1])
+        except OSError:
+            pass
+        return copybooks

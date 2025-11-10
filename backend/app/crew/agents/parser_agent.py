@@ -52,7 +52,8 @@ class COBOLParserAgent:
                 
                 # Parse COBOL file
                 ast = self._parse_cobol_file(program_path)
-                ast_data[program_name] = ast
+                for key in self._build_ast_keys(program, program_name):
+                    ast_data[key] = ast
                 
                 logger.info(f"[{job_id}] Parsed {program_name}: "
                           f"{len(ast.get('data_items', []))} data items, "
@@ -71,6 +72,32 @@ class COBOLParserAgent:
                 "success": False,
                 "error": str(e)
             }
+
+    def _build_ast_keys(self, program: Dict[str, Any], default_name: str) -> List[str]:
+        """Create a list of lookup keys for AST retrieval."""
+        keys = {default_name}
+
+        if default_name:
+            keys.add(default_name.upper())
+            keys.add(default_name.lower())
+
+        program_id = program.get("program_id")
+        if program_id:
+            keys.add(program_id)
+
+        relative_path = program.get("relative_path")
+        if relative_path:
+            keys.add(relative_path)
+            keys.add(Path(relative_path).stem)
+            keys.add(Path(relative_path).name)
+
+        absolute_path = program.get("path")
+        if absolute_path:
+            keys.add(absolute_path)
+            keys.add(Path(absolute_path).name)
+            keys.add(Path(absolute_path).stem)
+
+        return [key for key in keys if key]
     
     def _parse_cobol_file(self, file_path: str) -> Dict[str, Any]:
         """

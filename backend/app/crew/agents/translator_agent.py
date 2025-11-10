@@ -3,10 +3,10 @@ Translator Agent - Converts COBOL code to Java
 """
 
 import logging
-from typing import Dict, List, Any
+from typing import Any, Dict, Iterable, Optional
 from pathlib import Path
-import tempfile
-import os
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class TranslatorAgent:
                 - programs: List of program information
                 - ast_data: Parsed AST data
                 - target_stack: Target Java stack (springboot, jakarta, etc.)
+                - repo_path: Optional path to the cloned repository
         
         Returns:
             Dictionary with translation results
@@ -39,53 +40,74 @@ class TranslatorAgent:
         try:
             job_id = task_input["job_id"]
             programs = task_input["programs"]
-            ast_data = task_input["ast_data"]
+            ast_data = task_input.get("ast_data", {}) or {}
             target_stack = task_input.get("target_stack", "springboot")
+            repo_path = task_input.get("repo_path")
             
             logger.info(f"[{job_id}] Starting COBOL to Java translation "
                        f"for {len(programs)} programs (stack: {target_stack})")
             
-            java_files = {}
+            java_files: Dict[str, Dict[str, Any]] = {}
             translated_count = 0
+            skipped_programs = []
             
-            # Create output directory
-            output_dir = tempfile.mkdtemp(prefix=f"java_output_{job_id}_")
+            # Create output directory under artifacts
+            output_dir = Path(settings.ARTIFACTS_DIR) / job_id / "java"
+            output_dir.mkdir(parents=True, exist_ok=True)
             
             for program in programs:
-                program_name = program["name"]
+                program_name = self._resolve_program_name(program)
+                program_id = program.get("program_id")
                 
-                if program_name not in ast_data:
-                    logger.warning(f"[{job_id}] No AST data for {program_name}, skipping")
+                if not program_name:
+                    logger.warning(f"[{job_id}] Program without identifiable name, skipping entry: {program}")
+                    skipped_programs.append(program)
                     continue
                 
-                logger.info(f"[{job_id}] Translating {program_name} to Java")
+                ast = self._resolve_ast(program, ast_data)
+                if not ast:
+                    logger.warning(
+                        f"[{job_id}] No AST data for {program_name}; generating placeholder structure"
+                    )
+                    ast = self._build_placeholder_ast(program_name)
                 
-                ast = ast_data[program_name]
+                logger.info(f"[{job_id}] Translating {program_name} to Java")
                 
                 # Generate Java class
                 java_code = self._generate_java_class(program_name, ast, target_stack)
                 
                 # Write to file
-                java_file_path = os.path.join(output_dir, f"{program_name}.java")
-                with open(java_file_path, 'w') as f:
+                java_file_path = output_dir / f"{program_name}.java"
+                java_file_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(java_file_path, 'w', encoding='utf-8') as f:
                     f.write(java_code)
                 
                 java_files[program_name] = {
-                    "path": java_file_path,
+                    "program_id": program_id,
+                    "path": str(java_file_path),
                     "class_name": program_name,
-                    "package": "com.ford.migration.cobol"
+                    "package": "com.ford.migration.cobol",
+                    "source_relative_path": program.get("relative_path"),
+                    "source_path": program.get("path"),
+                    "repo_path": repo_path
                 }
                 
                 translated_count += 1
                 
                 logger.info(f"[{job_id}] Translated {program_name} successfully")
             
+            if skipped_programs:
+                logger.info(
+                    f"[{job_id}] Translation completed with {len(skipped_programs)} programs lacking identifiers"
+                )
+            
             return {
                 "success": True,
                 "job_id": job_id,
                 "java_files": java_files,
-                "output_dir": output_dir,
-                "translated_count": translated_count
+                "output_dir": str(output_dir),
+                "translated_count": translated_count,
+                "skipped": len(skipped_programs)
             }
             
         except Exception as e:
@@ -94,6 +116,69 @@ class TranslatorAgent:
                 "success": False,
                 "error": str(e)
             }
+
+    def _resolve_program_name(self, program: Dict[str, Any]) -> Optional[str]:
+        name = program.get("name")
+        if name:
+            return name
+
+        relative_path = program.get("relative_path")
+        if relative_path:
+            return Path(relative_path).stem
+
+        absolute_path = program.get("path")
+        if absolute_path:
+            return Path(absolute_path).stem
+
+        return None
+
+    def _resolve_ast(self, program: Dict[str, Any], ast_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for key in self._generate_lookup_keys(program):
+            ast = ast_data.get(key)
+            if ast:
+                return ast
+        return None
+
+    def _generate_lookup_keys(self, program: Dict[str, Any]) -> Iterable[str]:
+        keys = set()
+
+        def add_key(value: Optional[str]):
+            if value:
+                keys.add(value)
+
+        add_key(program.get("name"))
+
+        name = program.get("name")
+        if name:
+            add_key(name.upper())
+            add_key(name.lower())
+
+        add_key(program.get("program_id"))
+        add_key(program.get("relative_path"))
+
+        relative_path = program.get("relative_path")
+        if relative_path:
+            path_obj = Path(relative_path)
+            add_key(path_obj.name)
+            add_key(path_obj.stem)
+
+        absolute_path = program.get("path")
+        if absolute_path:
+            path_obj = Path(absolute_path)
+            add_key(str(path_obj))
+            add_key(path_obj.name)
+            add_key(path_obj.stem)
+
+        return keys
+
+    def _build_placeholder_ast(self, program_name: str) -> Dict[str, Any]:
+        return {
+            "program_id": program_name,
+            "divisions": [],
+            "data_items": [],
+            "procedures": [],
+            "file_controls": []
+        }
     
     def _generate_java_class(self, program_name: str, ast: Dict, target_stack: str) -> str:
         """
